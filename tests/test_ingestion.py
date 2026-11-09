@@ -64,3 +64,34 @@ def test_sources_match_dbt_seed():
     with seed.open() as f:
         seeded = {r["league_key"]: r["sport"] for r in csv.DictReader(f)}
     assert seeded == {lg.key: lg.sport for lg in LEAGUES}
+
+
+def test_summary_keeps_only_modelled_sections(task):
+    task.keep = ("header", "boxscore")
+    extract.run_task(FakeClient({"header": 1, "boxscore": 2, "news": 3, "plays": [4] * 1000}), task)
+    with gzip.open(task.dest, "rt") as f:
+        doc = json.load(f)
+    assert doc["payload"] == {"header": 1, "boxscore": 2}
+    assert doc["_meta"]["sections_kept"] == ["header", "boxscore"]
+
+
+def test_summary_tasks_skip_old_finished_games(tmp_path, monkeypatch):
+    monkeypatch.setattr(extract, "BRONZE", tmp_path)
+    nba = BY_KEY["nba"]
+
+    def scoreboard(d, events):
+        p = tmp_path / "scoreboard" / "league=nba" / f"date={d}.json.gz"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(p, "wt") as f:
+            json.dump({"_meta": {}, "payload": {"events": events}}, f)
+
+    final = lambda i: {"id": i, "status": {"type": {"state": "post", "name": "STATUS_FINAL"}}}
+    scoreboard("2026-11-01", [final("old")])
+    scoreboard("2026-11-08", [final("recent"), {"id": "future", "status": {"type": {"state": "pre", "name": "x"}}}])
+    # La ficha antigua ya existe: no se vuelve a pedir; la reciente sí (puede corregirse)
+    old = tmp_path / "summary" / "league=nba" / "event=old.json.gz"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"")
+    tasks = extract.summary_tasks([nba], date(2026, 11, 1), date(2026, 11, 9), today=date(2026, 11, 9))
+    assert [t.meta["event_id"] for t in tasks] == ["recent"]
+    assert tasks[0].url.endswith("basketball/nba/summary?event=recent")

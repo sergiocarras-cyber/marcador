@@ -91,3 +91,29 @@ models:
           - unique
           - not_null
           - relationships: {to: ref('fct_game'), field: event_id}
+
+  - name: fct_team_game_stats
+    description: Estadísticas de equipo por partido con etiqueta en español (las del seed stat_labels).
+    columns:
+      - name: event_id
+        data_tests:
+          - relationships: {to: ref('fct_game'), field: event_id}
+      - name: team_key
+        data_tests:
+          - relationships: {to: ref('dim_team'), field: team_key}
+
+  - name: fct_player_game_stats
+    description: Hoja de jugador por partido, formato largo.
+    columns:
+      - name: event_id
+        data_tests:
+          - relationships: {to: ref('fct_game'), field: event_id}
+      - name: player_id
+        data_tests: [not_null]
+
+  - name: fct_lineups
+    description: Alineaciones de fútbol por partido.
+    columns:
+      - name: event_id
+        data_tests:
+          - relationships: {to: ref('fct_game'), field: event_id}

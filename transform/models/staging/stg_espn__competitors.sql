@@ -17,6 +17,8 @@ select
     coalesce(c ->> '$.team.shortDisplayName', c ->> '$.team.name') as team_short_name,
     c ->> '$.team.abbreviation'                         as team_abbreviation,
     c ->> '$.team.logo'                                 as team_logo,
+    c ->> '$.team.color'                                as team_color,
+    c ->> '$.team.alternateColor'                       as team_alt_color,
     -- Antes del partido ESPN devuelve "0": solo es un marcador real si ha empezado
     case when status_state in ('in', 'post') then try_cast(c ->> '$.score' as integer) end as score,
     coalesce(try_cast(c ->> '$.winner' as boolean), false) as is_winner,

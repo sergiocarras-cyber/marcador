@@ -87,7 +87,8 @@ def load_games(con) -> dict[str, dict]:
     def side(key, score, record, lines):
         t = teams.get(key, {})
         return {"key": key, "id": t.get("team_id"), "name": t.get("team_short_name") or t.get("team_name"),
-                "abbr": t.get("team_abbreviation"), "logo": t.get("team_logo"), "score": score,
+                "full": t.get("team_name"), "abbr": t.get("team_abbreviation"), "logo": t.get("team_logo"),
+                "color": t.get("team_color"), "alt_color": t.get("team_alt_color"), "score": score,
                 "record": record, "linescores": [int(x) for x in (lines or [])]}
 
     out = {}
@@ -189,6 +190,127 @@ def export_f1(con) -> None:
                             "next": upcoming[0] if upcoming else None})
 
 
+# ---------- Ficha de partido ----------
+
+# Tablas de jugadores por deporte: (grupo, título, [(clave, columna)], ordenar por, máximo por equipo)
+PLAYER_TABLES = {
+    "nba": [("general", "Jugadores", [("minutes", "MIN"), ("points", "PTS"), ("rebounds", "REB"), ("assists", "AST"),
+             ("fieldGoalsMade-fieldGoalsAttempted", "TC"), ("threePointFieldGoalsMade-threePointFieldGoalsAttempted", "T3")],
+             "points", 10)],
+    "nfl": [("passing", "Pase", [("completions/passingAttempts", "C/I"), ("passingYards", "YD"),
+             ("passingTouchdowns", "TD"), ("interceptions", "INT")], "passingYards", 2),
+            ("rushing", "Carrera", [("rushingAttempts", "ACA"), ("rushingYards", "YD"), ("rushingTouchdowns", "TD")],
+             "rushingYards", 3),
+            ("receiving", "Recepción", [("receptions", "REC"), ("receivingYards", "YD"), ("receivingTouchdowns", "TD")],
+             "receivingYards", 3)],
+    "mlb": [("batting", "Bateo", [("hits-atBats", "H-VB"), ("runs", "C"), ("RBIs", "CI"), ("homeRuns", "HR")], "hits", 9),
+            ("pitching", "Pitcheo", [("fullInnings.partInnings", "EL"), ("hits", "H"), ("earnedRuns", "CL"),
+             ("strikeouts", "K")], "strikeouts", 4)],
+}
+EVENT_ES = {"Goal": "Gol", "Penalty - Scored": "Gol de penalti", "Own Goal": "Gol en propia",
+            "Yellow Card": "Amarilla", "Red Card": "Roja"}
+
+
+def export_game_pages(con, games: dict) -> int:
+    """game/<id>.json: todo lo que necesita la ficha de un partido, sin salir de la app."""
+    stats = defaultdict(lambda: defaultdict(dict))
+    for s in rows(con, "select * from gold.fct_team_game_stats order by sort_order"):
+        stats[s["event_id"]][s["stat_name"]][s["team_key"]] = s
+
+    players = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))  # evento → (equipo, grupo) → jugador → stats
+    for p in rows(con, """select event_id, team_key, stat_group, player_id, player_short_name, position, is_starter,
+                                 stat_key, display_value, value from gold.fct_player_game_stats"""):
+        row = players[p["event_id"]][(p["team_key"], p["stat_group"])].setdefault(
+            p["player_id"], {"name": p["player_short_name"], "position": p["position"], "starter": p["is_starter"], "v": {}})
+        row["v"][p["stat_key"]] = (p["display_value"], p["value"])
+
+    lineups = defaultdict(lambda: defaultdict(list))
+    for l in rows(con, "select * from gold.fct_lineups order by event_id, team_key, formation_place nulls last, jersey"):
+        lineups[l["event_id"]][l["team_key"]].append(l)
+
+    timeline = defaultdict(list)
+    for m in rows(con, """select event_id, 'futbol-' || team_id as team_key, event_type, minute_label, player_short_name,
+                                 is_goal, is_penalty, is_own_goal, is_red_card, is_yellow_card
+                          from silver.stg_espn__match_events
+                          where (is_goal and not is_shootout) or is_red_card or is_yellow_card
+                          order by event_id, clock_seconds"""):
+        kind = "goal" if m["is_goal"] else "red" if m["is_red_card"] else "yellow"
+        label = ("Gol de penalti" if m["is_penalty"] else "Gol en propia" if m["is_own_goal"] else "Gol") if kind == "goal" \
+            else EVENT_ES.get(m["event_type"], "Roja" if kind == "red" else "Amarilla")
+        timeline[m["event_id"]].append({"team_key": m["team_key"], "minute": m["minute_label"], "kind": kind,
+                                        "label": label, "player": m["player_short_name"]})
+
+    form = {f["team_key"]: f for f in rows(con, "select * from gold.team_form")}
+    standing = {s["team_key"]: s for s in rows(con, "select * from gold.standings")}
+
+    meetings = defaultdict(list)
+    for g in games.values():
+        meetings[(g["sport"], frozenset((g["home"]["key"], g["away"]["key"])))].append(g)
+
+    def team_context(key):
+        f, st = form.get(key) or {}, standing.get(key)
+        return {"last_5": f.get("last_5"), "wins": f.get("wins"), "draws": f.get("draws"), "losses": f.get("losses"),
+                "streak": f.get("streak_outcome"), "streak_length": f.get("streak_length"),
+                "position": st["position"] if st else None, "points": st["points"] if st else None,
+                "standing_group": (st["league_name"] if key.startswith("futbol") else st["group_name"]) if st else None}
+
+    def player_tables(g):
+        out = []
+        for group, title, cols, sort_key, limit in PLAYER_TABLES.get(g["sport"], []):
+            teams_out = []
+            for side in (g["away"], g["home"]) if g["sport"] != "futbol" else (g["home"], g["away"]):
+                ps = players[g["id"]].get((side["key"], group), {})
+                ranked = sorted(ps.values(), key=lambda p: -((p["v"].get(sort_key) or (None, 0))[1] or 0))[:limit]
+                if ranked:
+                    teams_out.append({"team_key": side["key"], "rows": [
+                        {"name": p["name"], "position": p["position"], "starter": p["starter"],
+                         "values": [(p["v"].get(k) or ("–",))[0] for k, _ in cols]} for p in ranked]})
+            if teams_out:
+                out.append({"title": title, "columns": [c for _, c in cols], "teams": teams_out})
+        return out
+
+    def team_stats(g):
+        out = []
+        for name, by_team in stats[g["id"]].items():
+            h, a = by_team.get(g["home"]["key"]), by_team.get(g["away"]["key"])
+            if not (h and a):
+                continue
+            fmt = h["format"]
+            show = lambda s: f"{int(s['value'])}%" if fmt in ("pct", "ratio") and s["value"] is not None else s["display_value"]
+            out.append({"label": h["label_es"], "format": fmt, "home": show(h), "away": show(a),
+                        "home_value": h["value"], "away_value": a["value"], "order": h["sort_order"]})
+        return sorted(out, key=lambda x: x["order"])
+
+    def lineup(g):
+        out = []
+        for side in (g["home"], g["away"]):
+            ls = lineups[g["id"]].get(side["key"])
+            if not ls:
+                continue
+            fmt = lambda l: {"name": l["player_short_name"], "jersey": l["jersey"], "position": l["position"],
+                             "in": l["subbed_in"], "out": l["subbed_out"]}
+            out.append({"team_key": side["key"], "formation": ls[0]["formation"],
+                        "starters": [fmt(l) for l in ls if l["is_starter"]],
+                        "subs": [fmt(l) for l in sorted((l for l in ls if not l["is_starter"]), key=lambda l: not l["subbed_in"])]})
+        return out
+
+    for g in games.values():
+        h2h = sorted((m for m in meetings[(g["sport"], frozenset((g["home"]["key"], g["away"]["key"])))]
+                      if m["id"] != g["id"] and m["state"] == "post"), key=lambda m: m["start_time"], reverse=True)[:5]
+        write(OUT / "game" / f"{g['id']}.json", {
+            "game": g,
+            "timeline": timeline.get(g["id"], []),
+            "stats": team_stats(g),
+            "players": player_tables(g),
+            "lineups": lineup(g),
+            "context": {"home": team_context(g["home"]["key"]), "away": team_context(g["away"]["key"])},
+            "meetings": [{"id": m["id"], "date": m["start_time"], "home": m["home"]["name"], "away": m["away"]["name"],
+                          "home_score": m["home"]["score"], "away_score": m["away"]["score"], "league": m["league"]}
+                         for m in h2h],
+        })
+    return len(games)
+
+
 RECENT_HOURS, UPCOMING_HOURS = 40, 72
 MAX_PER_LEAGUE = {"results": 2, "upcoming": 3, "live": 3}
 
@@ -266,6 +388,7 @@ def main() -> int:
     n_days = export_days(games, league_order)
     n_teams = export_teams(con, games)
     export_f1(con)
+    export_game_pages(con, games)
     featured = export_featured(con, games)
     print(f"Destacados: {featured}")
     last_ingest = con.execute("select max(ingested_at) from silver.stg_espn__events").fetchone()[0]

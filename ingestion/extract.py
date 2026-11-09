@@ -18,6 +18,7 @@ Uso:
     python -m ingestion.extract fixtures            # próximas 3 semanas (calendario)
     python -m ingestion.extract standings
     python -m ingestion.extract f1
+    python -m ingestion.extract summaries --days 21  # fichas de partidos terminados
     python -m ingestion.extract scoreboards --league nba --start 2026-11-01 --end 2026-11-08
 """
 from __future__ import annotations
@@ -48,6 +49,7 @@ class Task:
     url: str
     dest: Path
     meta: dict
+    keep: tuple[str, ...] | None = None  # secciones del payload a conservar (None = todo)
 
 
 @dataclass
@@ -93,6 +95,10 @@ def run_task(client: httpx.Client, t: Task) -> Result:
         payload = fetch(client, t.url)
     except Exception as e:  # noqa: BLE001 - se registra y se sigue con el resto
         return Result(t, "failed", str(e))
+    if t.keep:
+        # Resumen de partido: se guardan solo las secciones que se modelan. El resto
+        # (noticias, vídeos, jugada a jugada) multiplica por 30 el tamaño sin aportar.
+        payload = {k: payload[k] for k in t.keep if k in payload}
     h = payload_hash(payload)
     if read_existing_hash(t.dest) == h:
         return Result(t, "unchanged")
@@ -104,6 +110,7 @@ def run_task(client: httpx.Client, t: Task) -> Result:
             "source_url": t.url,
             "ingested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "payload_sha256": h,
+            **({"sections_kept": list(t.keep)} if t.keep else {}),
         },
         "payload": payload,
     }
@@ -173,12 +180,51 @@ def f1_tasks(season: int) -> list[Task]:
     )]
 
 
+SUMMARY_SECTIONS = {
+    "futbol": ("header", "boxscore", "rosters", "keyEvents"),
+    "default": ("header", "boxscore"),
+}
+FINAL_AFTER_DAYS = 2  # pasado este margen, la ficha de un partido terminado ya no cambia
+
+
+def finished_events(league: League, start: date, end: date):
+    """Partidos terminados según los marcadores ya guardados en bronze (sin llamar a la API)."""
+    for d in daterange(start, end):
+        path = BRONZE / "scoreboard" / f"league={league.key}" / f"date={d.isoformat()}.json.gz"
+        if not path.exists():
+            continue
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            events = json.load(f)["payload"].get("events", [])
+        for e in events:
+            status = e.get("status", {}).get("type", {})
+            if status.get("state") == "post" and status.get("name") not in ("STATUS_POSTPONED", "STATUS_CANCELED"):
+                yield d, e["id"]
+
+
+def summary_tasks(leagues: list[League], start: date, end: date, today: date) -> list[Task]:
+    tasks = []
+    for lg in leagues:
+        for d, event_id in finished_events(lg, start, end):
+            dest = BRONZE / "summary" / f"league={lg.key}" / f"event={event_id}.json.gz"
+            if dest.exists() and (today - d).days > FINAL_AFTER_DAYS:
+                continue
+            tasks.append(Task(
+                url=f"{ESPN_SITE}/{lg.path}/summary?event={event_id}",
+                dest=dest,
+                meta={"entity": "summary", "league": lg.key, "sport": lg.sport, "event_id": event_id,
+                      "date": d.isoformat()},
+                keep=SUMMARY_SECTIONS.get(lg.sport, SUMMARY_SECTIONS["default"]),
+            ))
+    return tasks
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["backfill", "recent", "fixtures", "standings", "f1", "scoreboards", "all"])
+    p.add_argument("command", choices=["backfill", "recent", "fixtures", "standings", "f1", "summaries", "scoreboards", "all"])
     p.add_argument("--league", action="append", help="limitar a una o varias ligas (clave)")
     p.add_argument("--start", type=date.fromisoformat)
     p.add_argument("--end", type=date.fromisoformat)
+    p.add_argument("--days", type=int, default=21, help="summaries: días hacia atrás")
     args = p.parse_args(argv)
 
     leagues = [BY_KEY[k] for k in args.league] if args.league else LEAGUES
@@ -196,9 +242,13 @@ def main(argv=None) -> int:
         tasks = standings_tasks()
     elif args.command == "f1":
         tasks = f1_tasks(SEASON)
+    elif args.command == "summaries":
+        tasks = summary_tasks(leagues, today - timedelta(days=args.days), today, today)
     elif args.command == "all":
-        tasks = (scoreboard_tasks(leagues, today - timedelta(days=3), today + timedelta(days=21))
-                 + standings_tasks() + f1_tasks(SEASON))
+        code = run(scoreboard_tasks(leagues, today - timedelta(days=3), today + timedelta(days=21))
+                   + standings_tasks() + f1_tasks(SEASON))
+        # Los resúmenes dependen de los marcadores recién descargados: van después
+        return max(code, run(summary_tasks(leagues, today - timedelta(days=3), today, today)))
     elif args.command == "scoreboards":
         if not (args.start and args.end):
             p.error("scoreboards necesita --start y --end")

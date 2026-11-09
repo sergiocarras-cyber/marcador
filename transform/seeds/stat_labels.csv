@@ -1,0 +1,39 @@
+sport,stat_name,label_es,sort_order,format
+futbol,possessionPct,Posesión,1,pct
+futbol,totalShots,Tiros,2,num
+futbol,shotsOnTarget,Tiros a puerta,3,num
+futbol,wonCorners,Córners,4,num
+futbol,totalPasses,Pases,5,num
+futbol,passPct,Precisión de pase,6,ratio
+futbol,saves,Paradas,7,num
+futbol,foulsCommitted,Faltas,8,num
+futbol,offsides,Fueras de juego,9,num
+futbol,yellowCards,Tarjetas amarillas,10,num
+futbol,redCards,Tarjetas rojas,11,num
+nba,fieldGoalPct,Tiros de campo,1,pct
+nba,threePointFieldGoalPct,Triples,2,pct
+nba,freeThrowPct,Tiros libres,3,pct
+nba,totalRebounds,Rebotes,4,num
+nba,assists,Asistencias,5,num
+nba,steals,Robos,6,num
+nba,blocks,Tapones,7,num
+nba,totalTurnovers,Pérdidas,8,num
+nba,pointsInPaint,Puntos en la pintura,9,num
+nba,fastBreakPoints,Puntos al contraataque,10,num
+nba,largestLead,Máxima ventaja,11,num
+nfl,totalYards,Yardas totales,1,num
+nfl,netPassingYards,Yardas de pase,2,num
+nfl,rushingYards,Yardas de carrera,3,num
+nfl,firstDowns,Primeros downs,4,num
+nfl,thirdDownEff,Terceros downs,5,text
+nfl,redZoneAttempts,Zona roja,6,text
+nfl,turnovers,Pérdidas de balón,7,num
+nfl,totalPenaltiesYards,Castigos (yardas),8,text
+nfl,possessionTime,Tiempo de posesión,9,text
+mlb,batting.hits,Hits,1,num
+mlb,batting.homeRuns,Jonrones,2,num
+mlb,batting.walks,Bases por bolas,3,num
+mlb,batting.strikeouts,Ponches recibidos,4,num
+mlb,batting.avg,Promedio de bateo,5,text
+mlb,pitching.strikeouts,Ponches del pitcheo,6,num
+mlb,fielding.errors,Errores,7,num

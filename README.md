@@ -23,10 +23,10 @@ flowchart LR
 
 | Capa | Dónde | Qué contiene |
 |---|---|---|
-| Bronze | `data/bronze/espn/...json.gz` (rama `data`) | La respuesta de la API tal cual, envuelta con `source_url`, `ingested_at` y un hash SHA-256 del contenido. Particionada por entidad, liga y fecha. |
-| Silver | `data/warehouse.duckdb`, esquema `silver` | JSON aplanado y tipado: un registro por partido, por equipo-partido, por incidencia (gol/tarjeta), por líder estadístico, por fila de clasificación y por piloto-sesión. Deduplicado por la ingesta más reciente. |
-| Gold | esquema `gold` | Modelo dimensional listo para consumir: `dim_team`, `fct_game`, `fct_team_game`, `team_form`, `game_interest`, `standings`, `f1_results`. |
-| Servicio | `app/data/*.json` | API estática: partidos por día, ficha por equipo con titular, forma y próximo partido, equipos para el selector y F1. |
+| Bronze | `data/bronze/espn/...json.gz` (rama `data`) | La respuesta de la API tal cual, envuelta con `source_url`, `ingested_at` y un hash SHA-256 del contenido. Particionada por entidad (marcadores, clasificaciones, F1 y fichas de partido), liga y fecha. |
+| Silver | `data/warehouse.duckdb`, esquema `silver` | JSON aplanado y tipado: partidos, equipo-partido, incidencias (gol/tarjeta), líderes, clasificación, piloto-sesión, estadísticas de equipo y de jugador (formato largo) y alineaciones. Deduplicado por la ingesta más reciente. |
+| Gold | esquema `gold` | Modelo dimensional listo para consumir: `dim_team`, `fct_game`, `fct_team_game`, `team_form`, `game_interest`, `fct_team_game_stats`, `fct_player_game_stats`, `fct_lineups`, `standings`, `f1_results`. |
+| Servicio | `app/data/*.json` | API estática: destacados, partidos por día, ficha completa de cada partido (estadísticas, jugadores, alineaciones, cronología, cara a cara), equipos y F1. |
 
 ## Modelo de datos (gold)
 
@@ -76,16 +76,21 @@ Algunas decisiones de modelado:
   y los balances se calculan con funciones de ventana sencillas.
 - **Rachas con *gaps-and-islands***: la racha actual es la "isla" de resultados iguales que empieza en el
   partido más reciente (`recency - row_number() over (partition by team, outcome)`).
+- **Fichas de partido en formato largo**: ESPN da las hojas de jugador como una lista de claves y, por
+  jugador, una lista de valores en el mismo orden. `stg_espn__player_box` las recorre en paralelo con
+  `unnest` y produce una fila por jugador y estadística. Así un mismo modelo sirve para NBA, NFL y MLB, y
+  qué estadísticas enseña la app se decide en el seed `stat_labels.csv`, no en el código.
 - **Pretemporada**: se marca con `is_preseason` y no cuenta para forma ni rachas. Lo detectó un test de
   conciliación (ver abajo).
 
 ## Calidad de datos
 
-`make transform` ejecuta 47 comprobaciones en cada carga:
+`make transform` ejecuta 62 comprobaciones en cada carga:
 
 - Genéricas: unicidad y no nulos en claves, valores aceptados, integridad referencial gold → `dim_team`.
 - `assert_two_teams_per_game`: cada partido tiene exactamente un local y un visitante.
 - `assert_linescores_sum_to_score`: en NBA, NFL y MLB la suma de parciales cuadra con el marcador.
+- `assert_box_points_match_score`: en la NBA, la suma de los puntos de los jugadores es el marcador del equipo.
 - `assert_soccer_goals_match_score` (aviso): los goles registrados como incidencia cuadran con el resultado.
 - `assert_form_reconciles_with_standings` (aviso): **conciliación entre fuentes**. Las victorias y derrotas
   calculadas desde los partidos deben coincidir con la clasificación oficial. Este test destapó que se
@@ -154,6 +159,11 @@ Para explorar el warehouse: `uv run python -c "import duckdb; duckdb.connect('da
 - **Frescura**: con una ejecución por hora, los partidos "en directo" pueden ir hasta una hora por detrás. El
   caso de uso principal (ver los resultados por la mañana) no lo necesita. El tiempo real está en la hoja de
   ruta.
+- **Fichas de partido recortadas**: el resumen completo de ESPN pesa unos 500 KB por partido, y la mayor
+  parte son noticias, vídeos y la jugada a jugada. Bronze guarda solo las secciones que se modelan (cabecera,
+  estadísticas, alineaciones y eventos clave): de 6 a 34 KB comprimidos. Cada archivo registra en
+  `sections_kept` qué se conservó. Se descargan las fichas de los partidos terminados en los últimos días;
+  una ficha de más de 2 días ya no se vuelve a pedir.
 - **Bronze en git**: es suficiente para una temporada (unos 10 MB comprimidos) y no cuesta nada. A más escala
   iría a almacenamiento de objetos.
 - **Dimensiones SCD tipo 1**: guardan solo los atributos más recientes de cada equipo. El historial de cambios
