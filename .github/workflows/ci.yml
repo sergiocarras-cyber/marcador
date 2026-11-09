@@ -1,0 +1,23 @@
+# Comprobaciones en cada push y pull request: tests de Python y que el proyecto dbt compila.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Tests unitarios
+        run: make test
+      - name: dbt parse
+        env:
+          DBT_PROFILES_DIR: transform
+        run: uv run dbt parse --project-dir transform

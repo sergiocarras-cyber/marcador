@@ -1,0 +1,26 @@
+name: stats
+version: "0.1.0"
+config-version: 2
+profile: stats
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+packages-install-path: "../data/dbt/packages"
+
+vars:
+  # Ruta a la capa bronze, relativa a la raíz del repositorio (donde se ejecuta dbt)
+  bronze: "data/bronze/espn"
+
+models:
+  stats:
+    staging:
+      +schema: silver
+      +materialized: table
+    marts:
+      +schema: gold
+      +materialized: table
+seeds:
+  stats:
+    +schema: ref

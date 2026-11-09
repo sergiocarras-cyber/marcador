@@ -1,0 +1,84 @@
+version: 2
+
+models:
+  - name: stg_espn__events
+    description: Un registro por partido, deduplicado por la ingesta más reciente.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: status_state
+        data_tests:
+          - accepted_values:
+              values: [pre, in, post]
+      - name: start_time
+        data_tests: [not_null]
+
+  - name: stg_espn__competitors
+    description: Un registro por equipo y partido.
+    columns:
+      - name: team_id
+        data_tests: [not_null]
+      - name: home_away
+        data_tests:
+          - accepted_values:
+              values: [home, away]
+
+  - name: dim_team
+    description: Dimensión de equipos con su liga principal.
+    columns:
+      - name: team_key
+        description: Clave sustituta estable, deporte + id de ESPN.
+        data_tests: [unique, not_null]
+      - name: team_name
+        data_tests: [not_null]
+
+  - name: fct_game
+    description: Hecho de partidos, grano partido.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: home_team_key
+        data_tests:
+          - relationships: {to: ref('dim_team'), field: team_key}
+      - name: away_team_key
+        data_tests:
+          - relationships: {to: ref('dim_team'), field: team_key}
+      - name: result
+        data_tests:
+          - accepted_values:
+              values: [home, away, draw]
+      - name: league_name
+        description: Toda liga ingerida debe estar en el seed de ligas.
+        data_tests: [not_null]
+
+  - name: fct_team_game
+    description: Hecho equipo-partido, dos filas por partido.
+    columns:
+      - name: outcome
+        data_tests:
+          - accepted_values:
+              values: [W, D, L]
+
+  - name: team_form
+    description: Forma reciente y racha actual por equipo.
+    columns:
+      - name: team_key
+        data_tests: [unique, not_null]
+
+  - name: standings
+    description: Clasificación actual por liga y grupo.
+    columns:
+      - name: team_key
+        data_tests:
+          - relationships: {to: ref('dim_team'), field: team_key}
+
+  - name: f1_results
+    description: Resultados de F1 por sesión y piloto.
+    columns:
+      - name: driver_country
+        description: País en español; un país nuevo sin traducir avisa para ampliar el seed.
+        data_tests:
+          - relationships:
+              to: ref('countries')
+              field: country_es
+              config: {severity: warn}

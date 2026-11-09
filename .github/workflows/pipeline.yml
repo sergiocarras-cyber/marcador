@@ -1,0 +1,81 @@
+# Pipeline programado: ingesta → dbt (silver/gold + tests) → JSON estático → GitHub Pages.
+# La capa bronze se conserva entre ejecuciones en la rama huérfana "data".
+name: pipeline
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # cada hora, en el minuto 17 para no coincidir con la hora en punto
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "Descargar la temporada completa (primera ejecución)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # para guardar la capa bronze en la rama data
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restaurar la capa bronze (rama data)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git clone --quiet --depth 1 --branch data "$remote" data/bronze
+          else
+            mkdir -p data/bronze && git -C data/bronze init --quiet -b data
+            git -C data/bronze remote add origin "$remote"
+          fi
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Instalar dependencias
+        run: uv sync --frozen
+
+      - name: Backfill
+        if: ${{ inputs.backfill }}
+        run: make backfill
+
+      - name: Ingesta, transformación y exportación
+        run: make pipeline
+
+      - name: Tests unitarios
+        run: make test
+
+      - name: Guardar la capa bronze
+        working-directory: data/bronze
+        run: |
+          git config user.name "stats-pipeline"
+          git config user.email "stats-pipeline@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Sin cambios en bronze"
+          else
+            git commit --quiet -m "bronze: ingesta $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push --quiet origin data
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

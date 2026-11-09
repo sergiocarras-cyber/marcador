@@ -1,0 +1,14 @@
+league_key,sport,league_name,sort_order
+esp.1,futbol,LaLiga,1
+uefa.champions,futbol,Champions League,2
+eng.1,futbol,Premier League,3
+uefa.europa,futbol,Europa League,4
+ita.1,futbol,Serie A,5
+ger.1,futbol,Bundesliga,6
+fra.1,futbol,Ligue 1,7
+esp.copa_del_rey,futbol,Copa del Rey,8
+uefa.europa.conf,futbol,Conference League,9
+esp.2,futbol,Segunda,10
+nba,nba,NBA,1
+nfl,nfl,NFL,1
+mlb,mlb,MLB,1

@@ -1,0 +1,18 @@
+# Datos: la capa bronze vive en la rama "data"; el warehouse y la salida se regeneran
+data/
+app/data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local
+.claude/
+.DS_Store
+
+# dbt
+transform/target/
+transform/logs/
+logs/

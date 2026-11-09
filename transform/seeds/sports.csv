@@ -1,0 +1,5 @@
+sport,sport_name,local_timezone,regulation_periods,points_win,points_draw
+futbol,Fútbol,Europe/Madrid,2,3,1
+nba,NBA,America/New_York,4,,
+nfl,NFL,America/New_York,4,,
+mlb,MLB,America/New_York,9,,
