@@ -19,7 +19,7 @@ ingest:           ## Ingesta incremental: últimos días, calendario, clasificac
 	uv run python -m ingestion.extract all
 
 transform:        ## Construye silver y gold y pasa los tests de calidad
-	$(DBT) seed $(DBT_ARGS) -q
+	$(DBT) seed $(DBT_ARGS) -q --full-refresh
 	$(DBT) build $(DBT_ARGS)
 
 serve:            ## Exporta la capa gold a JSON estático para la app

@@ -82,3 +82,12 @@ models:
               to: ref('countries')
               field: country_es
               config: {severity: warn}
+
+  - name: game_interest
+    description: Puntuación de interés 0-100 por partido y los motivos que la explican.
+    columns:
+      - name: event_id
+        data_tests:
+          - unique
+          - not_null
+          - relationships: {to: ref('fct_game'), field: event_id}

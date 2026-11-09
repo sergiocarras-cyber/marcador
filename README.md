@@ -16,7 +16,7 @@ flowchart LR
     A[API de ESPN] -->|"ingestion/extract.py<br/>idempotente, reintentos"| B[(Bronze<br/>JSON en bruto + linaje<br/>rama data)]
     B -->|dbt staging| C[(Silver<br/>partidos, equipos, incidencias,<br/>líderes, clasificación, F1)]
     C -->|dbt marts| D[(Gold<br/>modelo en estrella,<br/>forma y rachas)]
-    D -->|serving/export.py<br/>+ titulares| E[API JSON estática]
+    D -->|serving/export.py<br/>titulares y destacados| E[API JSON estática]
     E --> F[App web móvil<br/>GitHub Pages]
     G[GitHub Actions<br/>cada hora] -.orquesta.-> A
 ```
@@ -25,7 +25,7 @@ flowchart LR
 |---|---|---|
 | Bronze | `data/bronze/espn/...json.gz` (rama `data`) | La respuesta de la API tal cual, envuelta con `source_url`, `ingested_at` y un hash SHA-256 del contenido. Particionada por entidad, liga y fecha. |
 | Silver | `data/warehouse.duckdb`, esquema `silver` | JSON aplanado y tipado: un registro por partido, por equipo-partido, por incidencia (gol/tarjeta), por líder estadístico, por fila de clasificación y por piloto-sesión. Deduplicado por la ingesta más reciente. |
-| Gold | esquema `gold` | Modelo dimensional listo para consumir: `dim_team`, `fct_game`, `fct_team_game`, `team_form`, `standings`, `f1_results`. |
+| Gold | esquema `gold` | Modelo dimensional listo para consumir: `dim_team`, `fct_game`, `fct_team_game`, `team_form`, `game_interest`, `standings`, `f1_results`. |
 | Servicio | `app/data/*.json` | API estática: partidos por día, ficha por equipo con titular, forma y próximo partido, equipos para el selector y F1. |
 
 ## Modelo de datos (gold)
@@ -81,7 +81,7 @@ Algunas decisiones de modelado:
 
 ## Calidad de datos
 
-`make transform` ejecuta 42 comprobaciones en cada carga:
+`make transform` ejecuta 47 comprobaciones en cada carga:
 
 - Genéricas: unicidad y no nulos en claves, valores aceptados, integridad referencial gold → `dim_team`.
 - `assert_two_teams_per_game`: cada partido tiene exactamente un local y un visitante.
@@ -93,6 +93,24 @@ Algunas decisiones de modelado:
 
 Además, `make test` ejecuta los tests de Python (pytest): idempotencia del extractor, ventanas de temporada,
 coherencia entre el catálogo de fuentes y los seeds de dbt, y cada regla del generador de titulares.
+
+## Partidos destacados
+
+La portada de la app enseña los mejores partidos de las últimas 40 horas y de las próximas 72. El modelo
+`gold.game_interest` les pone una nota de 0 a 100:
+
+| Ingrediente | Cómo se mide |
+|---|---|
+| Competición | Peso de cada liga en el seed `leagues.csv` (Champions 1,0 · LaLiga y Premier 0,9 · NBA y NFL 0,85…) |
+| Enfrentamiento | Porcentaje de victorias de los dos equipos: media de ambos y el peor de los dos, para premiar que *los dos* sean buenos |
+| Emoción (solo terminados) | Marcador ajustado según el deporte, más extras por prórroga, remontada y partido de muchos goles |
+| Playoffs | +15 en NBA, NFL y MLB |
+
+Los partidos por jugar puntúan 50 % competición y 50 % enfrentamiento. Los terminados, 30 % competición,
+35 % enfrentamiento y 35 % emoción. Cada ingrediente sale como columna, así que la app puede explicar
+por qué destaca un partido: *Duelo de líderes*, *Remontada*, *8 goles*, *Lakers: 5 victorias seguidas*.
+La selección final (`serving/export.py`) exige una nota mínima de 55, admite como máximo 2 o 3 partidos
+por competición para que haya variedad y no repite el mismo enfrentamiento.
 
 ## Titulares
 

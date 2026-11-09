@@ -189,6 +189,73 @@ def export_f1(con) -> None:
                             "next": upcoming[0] if upcoming else None})
 
 
+RECENT_HOURS, UPCOMING_HOURS = 40, 72
+MAX_PER_LEAGUE = {"results": 2, "upcoming": 3, "live": 3}
+
+
+def reasons(i: dict, g: dict, form: dict) -> list[str]:
+    """Etiquetas que explican por qué se destaca un partido."""
+    out = []
+    if i["is_playoffs"]:
+        out.append("Playoffs")
+    if i["top_clash"]:
+        out.append("Duelo de líderes")
+    if i["comeback"]:
+        out.append("Remontada")
+    if i["overtime"]:
+        out.append("Entradas extra" if g["sport"] == "mlb" else "Penaltis" if g.get("penalties") else "Prórroga")
+    if i["goal_fest"]:
+        out.append(f"{g['home']['score'] + g['away']['score']} goles")
+    elif i["tight_finish"] and g["state"] == "post":
+        out.append("Final ajustado")
+    if g["state"] == "pre":
+        for side in (g["home"], g["away"]):
+            f = form.get(side["key"]) or {}
+            if f.get("streak_outcome") == "W" and (f.get("streak_length") or 0) >= 4:
+                out.append(f"{side['name']}: {f['streak_length']} victorias seguidas")
+    return out
+
+
+MIN_SCORE = 55  # por debajo no es "destacado", aunque falten partidos para llenar la lista
+
+
+def pick(candidates: list[dict], limit: int, per_league: int) -> list[dict]:
+    """Los mejores por puntuación, con un máximo por competición para que haya variedad
+    y sin repetir enfrentamiento (series de varios partidos seguidos entre los mismos equipos)."""
+    chosen, per, pairs = [], defaultdict(int), set()
+    for c in sorted(candidates, key=lambda c: (-c["score"], c["game"]["start_time"])):
+        g = c["game"]
+        pair = frozenset((g["home"]["key"], g["away"]["key"]))
+        if c["score"] >= MIN_SCORE and per[g["league_key"]] < per_league and pair not in pairs:
+            chosen.append(c)
+            per[g["league_key"]] += 1
+            pairs.add(pair)
+        if len(chosen) == limit:
+            break
+    return chosen
+
+
+def export_featured(con, games: dict) -> dict:
+    form = {f["team_key"]: f for f in rows(con, "select * from gold.team_form")}
+    interest = rows(con, f"""
+        select * from gold.game_interest
+        where start_time between now() - interval {RECENT_HOURS} hour and now() + interval {UPCOMING_HOURS} hour""")
+    buckets = defaultdict(list)
+    for i in interest:
+        g = games[i["event_id"]]
+        bucket = {"in": "live", "post": "results", "pre": "upcoming"}[g["state"]]
+        if bucket == "results" and not g["headline"]:
+            continue
+        buckets[bucket].append({"score": i["interest_score"], "reasons": reasons(i, g, form), "game": g})
+    out = {
+        "live": pick(buckets["live"], 6, MAX_PER_LEAGUE["live"]),
+        "results": pick(buckets["results"], 6, MAX_PER_LEAGUE["results"]),
+        "upcoming": sorted(pick(buckets["upcoming"], 8, MAX_PER_LEAGUE["upcoming"]), key=lambda c: c["game"]["start_time"]),
+    }
+    write(OUT / "featured.json", out)
+    return {k: len(v) for k, v in out.items()}
+
+
 def main() -> int:
     t0 = time.time()
     con = duckdb.connect(WAREHOUSE, read_only=True)
@@ -199,6 +266,8 @@ def main() -> int:
     n_days = export_days(games, league_order)
     n_teams = export_teams(con, games)
     export_f1(con)
+    featured = export_featured(con, games)
+    print(f"Destacados: {featured}")
     last_ingest = con.execute("select max(ingested_at) from silver.stg_espn__events").fetchone()[0]
     write(OUT / "meta.json", {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                               "data_as_of": iso(last_ingest), "games": len(games), "teams": n_teams})

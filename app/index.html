@@ -81,6 +81,8 @@
   .story-team img { width: 18px; height: 18px; object-fit: contain; }
   .story h2 { font-size: 21px; line-height: 1.25; font-weight: 700; letter-spacing: -0.02em; margin: 10px 0 6px; text-wrap: balance; }
   .story p { margin: 0; color: var(--muted); }
+  .story p.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .up-head { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
   .scoreline { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 14px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
   .scoreline img { width: 18px; height: 18px; object-fit: contain; }
   .scoreline b { font-weight: 600; }
@@ -140,7 +142,6 @@ const SPORTS = {
   mlb: { label: 'MLB', tz: 'America/New_York', reg: 9 },
 };
 const PICK_LEAGUES = [['esp.1', 'LaLiga'], ['eng.1', 'Premier'], ['ita.1', 'Serie A'], ['ger.1', 'Bundesliga'], ['fra.1', 'Ligue 1'], ['esp.2', 'Segunda']];
-const OUTCOME_ES = { W: 'G', D: 'E', L: 'P' };
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -251,71 +252,110 @@ function offline(msg = 'No se pudieron cargar los datos.') {
   $('retry').onclick = () => { cache.clear(); render(); };
 }
 
-// ---------- Inicio ----------
+// ---------- Inicio: destacados ----------
+const RECENT_MS = 40 * 3600e3, UPCOMING_MS = 72 * 3600e3;
+
 async function renderHome() {
   const id = ++reqId;
   const today = cap(new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' }));
   $('header').innerHTML = `<div class="eyebrow">${today}${meta ? ' · ' + ago(meta.data_as_of) : ''}</div>
-    <div class="top"><h1>Tus equipos</h1><div class="links">${spoilerLink()}<button class="link" id="editBtn">Editar</button></div></div>`;
+    <div class="top"><h1>Destacados</h1><div class="links">${spoilerLink()}<button class="link" id="editBtn">Equipos</button></div></div>`;
   bindSpoiler();
   $('editBtn').onclick = () => go('picker');
   const main = $('main');
-  if (!favTeams.length) {
-    main.innerHTML = `<div class="empty"><b>Aún no sigues a ningún equipo</b>Elige tus equipos y aquí verás cada mañana cómo les fue.<br><button class="btn" id="startBtn">Elegir equipos</button></div>`;
-    $('startBtn').onclick = () => go('picker');
-    return;
-  }
-  main.innerHTML = favTeams.map(() => '<div class="skeleton w3"></div><div class="skeleton w2"></div><div class="skeleton"></div>').join('');
-  const docs = await Promise.all(favTeams.map(f => getJSON(`team/${f.key}.json`).then(d => ({ fav: f, d })).catch(() => ({ fav: f, d: null }))));
+  main.innerHTML = '<div class="skeleton w3"></div><div class="skeleton w2"></div><div class="skeleton"></div><div class="skeleton w3"></div><div class="skeleton w2"></div>';
+
+  let featured, teamDocs;
+  try {
+    [featured, teamDocs] = await Promise.all([
+      getJSON('featured.json'),
+      Promise.all(favTeams.map(f => getJSON(`team/${f.key}.json`).catch(() => null))),
+    ]);
+  } catch { featured = null; }
   if (id !== reqId) return;
-  const latest = x => x.d?.live ? Infinity : new Date(x.d?.last?.start_time || 0).getTime();
-  docs.sort((a, b) => latest(b) - latest(a));
-  main.innerHTML = '';
-  docs.forEach(x => main.appendChild(storyCard(x)));
-}
+  if (!featured) return offline();
 
-function formChips(form) {
-  if (!form?.last_5) return '';
-  return `<span class="form" aria-label="Últimos resultados">${[...form.last_5].map(o => `<i class="${o}">${OUTCOME_ES[o]}</i>`).join('')}</span>`;
-}
-
-function storyCard({ fav, d }) {
-  const el = document.createElement('div');
-  el.className = 'story';
-  const sport = fav.sport;
-  const head = `<div class="story-team"><img src="${esc(fav.logo)}" alt="">${esc(fav.name)} · ${SPORTS[sport].label}</div>`;
-  const game = d?.live || d?.last;
-  if (!d || !game) {
-    el.innerHTML = head + `<p style="margin-top:10px">${d ? 'Todavía no ha jugado esta temporada.' : 'No hay datos de este equipo.'}</p>` + nextLine(d);
-    return el;
+  // Los partidos de tus equipos entran siempre, primero y marcados, aunque no estén entre los destacados
+  const now = Date.now();
+  const mine = { live: [], results: [], upcoming: [] };
+  for (const d of teamDocs || []) {
+    if (!d) continue;
+    const tag = `Tu equipo · ${d.team.name}`;
+    if (d.live) mine.live.push({ game: d.live, reasons: [tag], mine: true });
+    else if (d.last && now - new Date(d.last.start_time) < RECENT_MS) mine.results.push({ game: d.last, reasons: [tag], mine: true });
+    if (d.next && new Date(d.next.start_time) - now < UPCOMING_MS) mine.upcoming.push({ game: d.next, reasons: [tag], mine: true });
   }
-  const hide = spoilerFree && !revealed.has(game.id);
-  const live = game.state === 'in';
-  const [l, r] = sport === 'futbol' ? [game.home, game.away] : [game.away, game.home];
+  // Si un partido de tu equipo también es destacado, se juntan las dos etiquetas
+  const merge = (a, b) => {
+    const byId = new Map(b.map(x => [x.game.id, x]));
+    const mineMerged = a.map(x => byId.has(x.game.id) ? { ...x, reasons: [...x.reasons, ...byId.get(x.game.id).reasons] } : x);
+    const seen = new Set(a.map(x => x.game.id));
+    return [...mineMerged, ...b.filter(x => !seen.has(x.game.id))];
+  };
+  const live = merge(mine.live, featured.live);
+  const results = merge(mine.results, featured.results);
+  // Un partido que ya empezó desde la última actualización deja de ser "próximo"
+  const upcoming = merge(mine.upcoming, featured.upcoming).filter(x => new Date(x.game.start_time) > now - 3600e3)
+    .sort((a, b) => a.game.start_time.localeCompare(b.game.start_time));
+
+  main.innerHTML = '';
+  const section = (title, items, render) => {
+    if (!items.length) return;
+    main.insertAdjacentHTML('beforeend', `<div class="section">${title}</div>`);
+    items.forEach(x => main.appendChild(render(x)));
+  };
+  section('En juego', live, resultCard);
+  section('Lo mejor de las últimas horas', results, resultCard);
+  section('Próximos partidos destacados', upcoming, upcomingRow);
+  if (!main.children.length) main.innerHTML = `<div class="empty"><b>Sin partidos destacados</b>No hay grandes partidos en estos días. Echa un vistazo a cada deporte abajo.</div>`;
+}
+
+const leagueLabel = g => g.sport === 'futbol' ? g.league : SPORTS[g.sport].label;
+const reasonLine = x => [leagueLabel(x.game), ...x.reasons].map(esc).join(' · ');
+
+function resultCard(x) {
+  const g = x.game, el = document.createElement('div');
+  el.className = 'story';
+  const hide = spoilerFree && !revealed.has(g.id);
+  const live = g.state === 'in';
+  const [l, r] = g.sport === 'futbol' ? [g.home, g.away] : [g.away, g.home];
   const score = hide ? '<span class="masked">· ·</span>' : `<b>${l.score ?? ''}</b><span class="sep">–</span><b>${r.score ?? ''}</b>`;
-  const status = live ? `<span class="live-txt">En juego · ${esc(liveText(game))}</span>`
-    : [`Final${extraTime(game)}`, shortDate(game.start_time), sport === 'futbol' ? game.league : ''].filter(Boolean).join(' · ');
-  const h = game.headline;
-  const titleHtml = hide ? `<h2>Resultado oculto</h2><p>Toca para verlo.</p>`
-    : live ? `<h2>${esc(game.home.name)} ${game.home.score} – ${game.away.score} ${esc(game.away.name)}</h2>`
-    : h ? `<h2>${esc(h.title)}</h2>${h.text ? `<p>${esc(h.text)}</p>` : ''}` : '';
-  const standing = d.standing?.position ? `${d.standing.position}º en ${esc(d.standing.league || '')}${d.standing.points != null && sport === 'futbol' ? ` · ${d.standing.points} pts` : ''}` : '';
-  const form = hide ? '' : [standing, d.form?.last_5 ? `Forma ${formChips(d.form)}` : ''].filter(Boolean).join(' · ');
-  el.innerHTML = head + titleHtml +
-    `<div class="scoreline"><img src="${esc(l.logo)}" alt="">${esc(l.name)} ${score} ${esc(r.name)}<img src="${esc(r.logo)}" alt=""></div>
-     <div class="small">${status}</div>` + (form ? `<div class="small">${form}</div>` : '') + nextLine(d);
+  const title = hide ? 'Resultado oculto'
+    : live ? `${g.home.name} ${g.home.score} – ${g.away.score} ${g.away.name}`
+    : g.headline?.title || `${g.home.name} – ${g.away.name}`;
+  const text = hide ? 'Toca para verlo.' : live ? '' : g.headline?.text || '';
+  const status = live ? `<span class="live-txt">En juego · ${esc(liveText(g))}</span>` : `Final${hide ? '' : extraTime(g)} · ${shortDate(g.start_time)}`;
+  el.innerHTML = `<div class="story-team">${hide ? esc(leagueLabel(g)) : reasonLine(x)}</div>
+    <h2>${esc(title)}</h2>${text ? `<p class="clamp">${esc(text)}</p>` : ''}
+    <div class="scoreline"><img src="${esc(l.logo)}" alt="">${esc(l.name)} ${score} ${esc(r.name)}<img src="${esc(r.logo)}" alt=""></div>
+    <div class="small">${status}</div>`;
   el.onclick = () => {
-    if (hide) { revealed.add(game.id); el.replaceWith(storyCard({ fav, d })); return; }
-    go(sport, { date: game.date, open: game.id });
+    if (hide) { revealed.add(g.id); el.replaceWith(resultCard(x)); return; }
+    go(g.sport, { date: g.date, open: g.id });
   };
   return el;
 }
-function nextLine(d) {
-  const n = d?.next;
-  if (!n) return '';
-  const home = n.home.key === d.team.key;
-  const opp = home ? n.away : n.home;
-  return `<div class="small">Próximo: <b>${home ? 'contra' : 'en casa de'} ${esc(opp.name)}</b> · ${shortDate(n.start_time)}, ${hhmm(n.start_time)}</div>`;
+
+function upcomingRow(x) {
+  const g = x.game, el = document.createElement('div');
+  el.className = 'game';
+  const [first, second] = g.sport === 'futbol' ? [g.home, g.away] : [g.away, g.home];
+  const when = `${dayWord(g.start_time)}, ${hhmm(g.start_time)}`;
+  el.innerHTML = `<div class="up-head">${reasonLine(x)}</div>
+    <div class="row"><img class="logo" src="${esc(first.logo)}" alt=""><div class="name">${esc(first.name)}${first.record ? `<span class="rec">${esc(first.record)}</span>` : ''}</div></div>
+    <div class="row"><img class="logo" src="${esc(second.logo)}" alt=""><div class="name">${esc(second.name)}${second.record ? `<span class="rec">${esc(second.record)}</span>` : ''}</div></div>
+    <div class="meta"><span>${when}</span><span>${esc(g.broadcast || '')}</span></div>`;
+  el.onclick = () => go(g.sport, { date: g.date, open: g.id });
+  return el;
+}
+
+// "Hoy", "Mañana" o el día de la semana, en tu hora
+function dayWord(iso) {
+  const d = new Date(iso), t = new Date();
+  const days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(t.getFullYear(), t.getMonth(), t.getDate())) / 86400000);
+  if (days === 0) return d.getHours() < 6 ? 'Esta madrugada' : 'Hoy';
+  if (days === 1) return d.getHours() < 6 ? 'Mañana de madrugada' : 'Mañana';
+  return cap(d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric' }));
 }
 
 // ---------- Selector de equipos ----------
